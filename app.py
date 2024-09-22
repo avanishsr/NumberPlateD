@@ -1,81 +1,59 @@
-import base64
-import os
-import tempfile
 from flask import Flask, request, jsonify
-from ultralytics import YOLO
+import cv2
+import base64
 from io import BytesIO
 from PIL import Image
-import cv2
+from ultralytics import YOLO
+import numpy as np
 
-# Initialize Flask app
 app = Flask(__name__)
 
-# Load YOLOv8 model (ensure the best.pt is in the same folder as this script)
+# Load the YOLO model
 model = YOLO("best.pt")
 
-# Route to process the video and detect the best license plate from the first frame
-@app.route('/detect_video', methods=['POST'])
-def detect_best_plate_from_video():
-    if 'video' not in request.files:
-        return jsonify({'error': 'No video uploaded'})
+def process_image(image):
+    # Convert the image to a format YOLO expects (BGR, OpenCV format)
+    image_np = np.array(image)
+    image_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
 
-    # Create a temporary file to save the uploaded video
-    video_file = request.files['video']
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_video:
-        temp_video.write(video_file.read())
-        temp_video_path = temp_video.name
+    # Run YOLO on the image
+    results = model(image_bgr)
 
-    # Process the video using OpenCV
-    cap = cv2.VideoCapture(temp_video_path)
+    # Assuming the first result is the number plate, adjust if needed
+    if len(results) > 0 and len(results[0].boxes) > 0:
+        box = results[0].boxes[0].xyxy[0].cpu().numpy().astype(int)  # Get first bounding box
+        x1, y1, x2, y2 = box
 
-    # Read the first frame
-    ret, first_frame = cap.read()
-    cap.release()  # Release the video capture object as we only need the first frame
+        # Crop the detected number plate
+        cropped_image = image_np[y1:y2, x1:x2]
 
-    # Remove the temporary video file
-    os.remove(temp_video_path)
+        # Convert to PIL Image for base64 encoding
+        pil_img = Image.fromarray(cropped_image)
+        buffer = BytesIO()
+        pil_img.save(buffer, format="JPEG")
+        img_str = base64.b64encode(buffer.getvalue()).decode("utf-8")
 
-    if not ret:
-        return jsonify({'error': 'Failed to read video'})
+        return img_str
 
-    best_confidence = 0
-    best_box = None
+    return None
 
-    # Run YOLOv8 inference on the first frame
-    results = model(first_frame)
+@app.route('/detect_number_plate', methods=['POST'])
+def detect_number_plate():
+    if 'file' not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
 
-    # Check for detections
-    if len(results) > 0 and results[0].boxes is not None:
-        for i, box in enumerate(results[0].boxes.xyxy):
-            confidence = results[0].boxes.conf[i].item()  # Confidence score
-            x1, y1, x2, y2 = map(int, box.cpu().numpy())  # Bounding box
+    file = request.files['file']
 
-            # Get the size of the bounding box (area)
-            box_area = (x2 - x1) * (y2 - y1)
+    # Open the uploaded image file
+    image = Image.open(file)
 
-            # Select the largest plate with the highest confidence
-            if confidence > best_confidence and box_area > 1000:  # Adjust area threshold if needed
-                best_confidence = confidence
-                best_box = (x1, y1, x2, y2)
+    # Process the image to detect the number plate
+    cropped_image_base64 = process_image(image)
 
-    # Ensure we found a plate
-    if best_box:
-        # Crop the best detected license plate
-        x1, y1, x2, y2 = best_box
-        cropped_plate = first_frame[y1:y2, x1:x2]
-
-        # Convert cropped image to base64
-        cropped_image_pil = Image.fromarray(cv2.cvtColor(cropped_plate, cv2.COLOR_BGR2RGB))
-        buffered = BytesIO()
-        cropped_image_pil.save(buffered, format="JPEG")
-        cropped_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
-
-        # Return the base64 image of the cropped license plate
-        return jsonify({
-            'cropped_image_base64': cropped_base64
-        })
+    if cropped_image_base64:
+        return jsonify({"cropped_image": cropped_image_base64})
     else:
-        return jsonify({'error': 'No license plate detected'})
+        return jsonify({"error": "Could not detect number plate"}), 400
 
 
 if __name__ == "__main__":
