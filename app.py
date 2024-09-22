@@ -1,6 +1,6 @@
 import base64
 import os
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify
 from ultralytics import YOLO
 from io import BytesIO
 from PIL import Image
@@ -30,54 +30,39 @@ def detect_best_plate_from_video():
     # Process the video using OpenCV
     cap = cv2.VideoCapture(video_path)
 
+    # Read the first frame
+    ret, first_frame = cap.read()
+    cap.release()  # Release the video capture object as we only need the first frame
+
+    if not ret:
+        return jsonify({'error': 'Failed to read video'})
+
     best_plate = None
     best_confidence = 0
     best_box = None
-    best_frame = None
 
-    frame_count = 0
-    frame_skip = 5  # Process every 5th frame to save time
-    x_confidence = 0.5  # Confidence threshold
+    # Run YOLOv8 inference on the first frame
+    results = model(first_frame)
 
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break  # End of video
+    # Check for detections
+    if len(results) > 0 and results[0].boxes is not None:
+        for i, box in enumerate(results[0].boxes.xyxy):
+            confidence = results[0].boxes.conf[i].item()  # Confidence score
+            x1, y1, x2, y2 = map(int, box.cpu().numpy())  # Bounding box
 
-        # Only process every nth frame unless a plate with high confidence is found
-        if frame_count % frame_skip == 0:
-            # Run YOLOv8 inference on the current frame
-            results = model(frame)
+            # Get the size of the bounding box (area)
+            box_area = (x2 - x1) * (y2 - y1)
 
-            # Check for detections
-            if len(results) > 0 and results[0].boxes is not None:
-                for i, box in enumerate(results[0].boxes.xyxy):
-                    confidence = results[0].boxes.conf[i].item()  # Confidence score
-                    x1, y1, x2, y2 = map(int, box.cpu().numpy())  # Bounding box
-
-                    # Get the size of the bounding box (area)
-                    box_area = (x2 - x1) * (y2 - y1)
-
-                    # Select the largest plate with the highest confidence
-                    if confidence > best_confidence and box_area > 1000:  # Adjust area threshold if needed
-                        best_confidence = confidence
-                        best_box = (x1, y1, x2, y2)
-                        best_frame = frame
-
-                    # If confidence is higher than the threshold, skip further frames for a while
-                    if confidence >= x_confidence:
-                        frame_count += frame_skip  # Skip the next few frames if confidence is high
-
-        frame_count += 1
-
-    # Release the video capture object
-    cap.release()
+            # Select the largest plate with the highest confidence
+            if confidence > best_confidence and box_area > 1000:  # Adjust area threshold if needed
+                best_confidence = confidence
+                best_box = (x1, y1, x2, y2)
 
     # Ensure we found a plate
-    if best_box and best_frame is not None:
+    if best_box:
         # Crop the best detected license plate
         x1, y1, x2, y2 = best_box
-        cropped_plate = best_frame[y1:y2, x1:x2]
+        cropped_plate = first_frame[y1:y2, x1:x2]
 
         # Convert cropped image to base64
         cropped_image_pil = Image.fromarray(cv2.cvtColor(cropped_plate, cv2.COLOR_BGR2RGB))
