@@ -1,5 +1,6 @@
 import base64
 import os
+import tempfile
 from flask import Flask, request, jsonify
 from ultralytics import YOLO
 from io import BytesIO
@@ -12,32 +13,31 @@ app = Flask(__name__)
 # Load YOLOv8 model (ensure the best.pt is in the same folder as this script)
 model = YOLO("best.pt")
 
-# Ensure the output folder exists
-if not os.path.exists("static/output"):
-    os.makedirs("static/output")
-
-# Route to process the video and detect the best license plate
+# Route to process the video and detect the best license plate from the first frame
 @app.route('/detect_video', methods=['POST'])
 def detect_best_plate_from_video():
     if 'video' not in request.files:
         return jsonify({'error': 'No video uploaded'})
 
-    # Save uploaded video file
+    # Create a temporary file to save the uploaded video
     video_file = request.files['video']
-    video_path = os.path.join('static/output', video_file.filename)
-    video_file.save(video_path)
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_video:
+        temp_video.write(video_file.read())
+        temp_video_path = temp_video.name
 
     # Process the video using OpenCV
-    cap = cv2.VideoCapture(video_path)
+    cap = cv2.VideoCapture(temp_video_path)
 
     # Read the first frame
     ret, first_frame = cap.read()
     cap.release()  # Release the video capture object as we only need the first frame
 
+    # Remove the temporary video file
+    os.remove(temp_video_path)
+
     if not ret:
         return jsonify({'error': 'Failed to read video'})
 
-    best_plate = None
     best_confidence = 0
     best_box = None
 
