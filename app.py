@@ -16,13 +16,6 @@ model = YOLO("best.pt")
 if not os.path.exists("static/output"):
     os.makedirs("static/output")
 
-
-# Home Route to upload video
-@app.route('/')
-def home():
-    return render_template('index.html')
-
-
 # Route to process the video and detect the best license plate
 @app.route('/detect_video', methods=['POST'])
 def detect_best_plate_from_video():
